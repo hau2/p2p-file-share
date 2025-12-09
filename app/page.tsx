@@ -104,6 +104,8 @@ export default function HomePage() {
       sdp: json,
     });
 
+    localStorage.setItem("offer_" + key, json);
+
     setOfferText(key);
     setOfferQR(
       `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${key}`
@@ -177,64 +179,79 @@ export default function HomePage() {
   // ===============================
   // RECEIVER FLOW
   // ===============================
+  async function processOffer(key: string, offerSDP: string) {
+    appendLog("Receiver: xử lý Offer…");
+
+    const pc = ensurePC();
+
+    pc.ondatachannel = (ev) => {
+      const ch = ev.channel;
+      dataChannelRef.current = ch;
+      ch.binaryType = "arraybuffer";
+
+      ch.onopen = () => setIsChannelOpen(true);
+      ch.onclose = () => setIsChannelOpen(false);
+
+      let meta: any = null;
+      const chunks: any[] = [];
+
+      ch.onmessage = (e) => {
+        if (typeof e.data === "string") {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "meta") meta = msg;
+          else if (msg.type === "end") {
+            const blob = new Blob(chunks);
+            const url = URL.createObjectURL(blob);
+            setReceivedFile({ name: meta.name, size: meta.size, url });
+          }
+        } else {
+          chunks.push(new Uint8Array(e.data));
+        }
+      };
+    };
+
+    // apply remote
+    await pc.setRemoteDescription(JSON.parse(offerSDP));
+
+    // create answer
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await waitForIceComplete(pc);
+
+    const answerJson = JSON.stringify(pc.localDescription);
+    const answerKey = key + "-ans";
+
+    channel.postMessage({
+      type: "answer",
+      key: answerKey,
+      sdp: answerJson,
+    });
+
+    setAnswerText(answerKey);
+    setAnswerQR(
+      `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${answerKey}`
+    );
+
+    appendLog("Receiver: Answer đã sẵn sàng → key = " + answerKey);
+  }
+
   const createAnswerFromOffer = async (key: string) => {
     appendLog("Receiver: tìm offer với key = " + key);
 
-    // lắng nghe broadcast
+    // 1️⃣ thử lấy từ localStorage trước
+    const cached = localStorage.getItem("offer_" + key);
+    if (cached) {
+      appendLog("Receiver: tìm thấy Offer trong localStorage!");
+      await processOffer(key, cached);
+      return;
+    }
+
+    // 2️⃣ nếu chưa có → lắng nghe BroadcastChannel
     const handler = async (msg: any) => {
       if (msg.data.type === "offer" && msg.data.key === key) {
-        appendLog("Receiver: nhận offer!");
-
-        const pc = ensurePC();
-
-        pc.ondatachannel = (ev) => {
-          const ch = ev.channel;
-          ch.binaryType = "arraybuffer";
-          dataChannelRef.current = ch;
-
-          ch.onopen = () => setIsChannelOpen(true);
-          ch.onclose = () => setIsChannelOpen(false);
-
-          let meta: any = null;
-          const chunks: any[] = [];
-
-          ch.onmessage = (e) => {
-            if (typeof e.data === "string") {
-              const msg = JSON.parse(e.data);
-              if (msg.type === "meta") meta = msg;
-              else if (msg.type === "end") {
-                const blob = new Blob(chunks);
-                const url = URL.createObjectURL(blob);
-                setReceivedFile({ name: meta.name, size: meta.size, url });
-              }
-            } else chunks.push(new Uint8Array(e.data));
-          };
-        };
-
-        await pc.setRemoteDescription(JSON.parse(msg.data.sdp));
-
-        // tạo answer
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await waitForIceComplete(pc);
-
-        const answerJson = JSON.stringify(pc.localDescription);
-        const answerKey = key + "-ans";
-
-        channel.postMessage({
-          type: "answer",
-          key: answerKey,
-          sdp: answerJson,
-        });
-
-        setAnswerText(answerKey);
-        setAnswerQR(
-          `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${answerKey}`
-        );
-
-        appendLog("Receiver: Answer ready → " + answerKey);
-
+        appendLog("Receiver: nhận offer qua BroadcastChannel!");
         channel.removeEventListener("message", handler);
+        await processOffer(key, msg.data.sdp);
       }
     };
 
