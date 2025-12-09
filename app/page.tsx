@@ -5,6 +5,12 @@
 import React, { useRef, useState } from "react";
 import QrScanner from "@/components/QRScanner";
 
+// tạo mã ngắn
+const genKey = () => Math.random().toString(36).substring(2, 8);
+
+// tạo broadcast channel
+const channel = new BroadcastChannel("p2p-signaling");
+
 type Nullable<T> = T | null;
 
 interface ReceivedFile {
@@ -75,19 +81,12 @@ export default function HomePage() {
 
     const pc = ensurePC();
 
-    const channel = pc.createDataChannel("file");
-    dataChannelRef.current = channel;
-    channel.binaryType = "arraybuffer";
+    const dc = pc.createDataChannel("file");
+    dataChannelRef.current = dc;
+    dc.binaryType = "arraybuffer";
 
-    channel.onopen = () => {
-      setIsChannelOpen(true);
-      appendLog("DataChannel opened.");
-    };
-
-    channel.onclose = () => {
-      setIsChannelOpen(false);
-      appendLog("DataChannel closed.");
-    };
+    dc.onopen = () => setIsChannelOpen(true);
+    dc.onclose = () => setIsChannelOpen(false);
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -95,23 +94,42 @@ export default function HomePage() {
 
     const json = JSON.stringify(pc.localDescription);
 
+    // 🎉 SHORT KEY
+    const key = genKey();
+
+    // gửi offer qua broadcast
+    channel.postMessage({
+      type: "offer",
+      key,
+      sdp: json,
+    });
+
+    setOfferText(key);
     setOfferQR(
-      `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(
-        json
-      )}`
+      `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${key}`
     );
 
-    setOfferText(json);
-    appendLog("Offer created & QR ready.");
+    appendLog("Offer created → key = " + key);
   };
 
   const handleApplyAnswer = async () => {
-    if (!answerText.trim()) return appendLog("Chưa có Answer!");
+    if (!answerText.trim()) return appendLog("Chưa có Answer Key!");
 
-    const pc = ensurePC();
-    await pc.setRemoteDescription(JSON.parse(answerText));
+    const key = answerText.trim();
 
-    appendLog("Answer applied, waiting for channel…");
+    const handler = async (msg: any) => {
+      if (msg.data.type === "answer" && msg.data.key === key) {
+        appendLog("Sender: nhận Answer!");
+
+        const pc = ensurePC();
+        await pc.setRemoteDescription(JSON.parse(msg.data.sdp));
+
+        appendLog("Sender: Answer applied!");
+        channel.removeEventListener("message", handler);
+      }
+    };
+
+    channel.addEventListener("message", handler);
   };
 
   const handleSendFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -156,63 +174,68 @@ export default function HomePage() {
   // ===============================
   // RECEIVER FLOW
   // ===============================
-  const createAnswerFromOffer = async (offerJson: string) => {
-    const pc = ensurePC();
+  const createAnswerFromOffer = async (key: string) => {
+    appendLog("Receiver: tìm offer với key = " + key);
 
-    pc.ondatachannel = (ev) => {
-      const channel = ev.channel;
-      channel.binaryType = "arraybuffer";
+    // lắng nghe broadcast
+    const handler = async (msg: any) => {
+      if (msg.data.type === "offer" && msg.data.key === key) {
+        appendLog("Receiver: nhận offer!");
 
-      channel.onopen = () => {
-        setIsChannelOpen(true);
-        appendLog("Receiver: Channel opened.");
-      };
+        const pc = ensurePC();
 
-      channel.onclose = () => {
-        setIsChannelOpen(false);
-        appendLog("Receiver: Channel closed.");
-      };
+        pc.ondatachannel = (ev) => {
+          const ch = ev.channel;
+          ch.binaryType = "arraybuffer";
+          dataChannelRef.current = ch;
 
-      let meta: any = null;
-      const chunks: any[] = [];
+          ch.onopen = () => setIsChannelOpen(true);
+          ch.onclose = () => setIsChannelOpen(false);
 
-      channel.onmessage = (e) => {
-        if (typeof e.data === "string") {
-          try {
-            const msg = JSON.parse(e.data);
-            if (msg.type === "meta") meta = msg;
-            else if (msg.type === "end") {
-              const blob = new Blob(chunks);
-              const url = URL.createObjectURL(blob);
-              setReceivedFile({
-                name: meta.name,
-                size: meta.size,
-                url,
-              });
-              appendLog("Receiver: File received!");
-            }
-          } catch {}
-        } else {
-          chunks.push(new Uint8Array(e.data));
-        }
-      };
+          let meta: any = null;
+          const chunks: any[] = [];
+
+          ch.onmessage = (e) => {
+            if (typeof e.data === "string") {
+              const msg = JSON.parse(e.data);
+              if (msg.type === "meta") meta = msg;
+              else if (msg.type === "end") {
+                const blob = new Blob(chunks);
+                const url = URL.createObjectURL(blob);
+                setReceivedFile({ name: meta.name, size: meta.size, url });
+              }
+            } else chunks.push(new Uint8Array(e.data));
+          };
+        };
+
+        await pc.setRemoteDescription(JSON.parse(msg.data.sdp));
+
+        // tạo answer
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await waitForIceComplete(pc);
+
+        const answerJson = JSON.stringify(pc.localDescription);
+        const answerKey = key + "-ans";
+
+        channel.postMessage({
+          type: "answer",
+          key: answerKey,
+          sdp: answerJson,
+        });
+
+        setAnswerText(answerKey);
+        setAnswerQR(
+          `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${answerKey}`
+        );
+
+        appendLog("Receiver: Answer ready → " + answerKey);
+
+        channel.removeEventListener("message", handler);
+      }
     };
 
-    await pc.setRemoteDescription(JSON.parse(offerJson));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await waitForIceComplete(pc);
-
-    const json = JSON.stringify(pc.localDescription);
-
-    setAnswerQR(
-      `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(
-        json
-      )}`
-    );
-
-    setAnswerText(json);
-    appendLog("Answer created & QR ready.");
+    channel.addEventListener("message", handler);
   };
 
   // ===============================
@@ -252,10 +275,7 @@ export default function HomePage() {
           marginBottom: 24,
         }}
       >
-        <button
-          onClick={handleCreateOffer}
-          style={styles.primaryBtn}
-        >
+        <button onClick={handleCreateOffer} style={styles.primaryBtn}>
           🚀 Tôi là Sender
         </button>
 
@@ -325,7 +345,11 @@ export default function HomePage() {
               <strong>{receivedFile.name}</strong> <br />
               {receivedFile.size} bytes
             </div>
-            <a href={receivedFile.url} download={receivedFile.name} style={styles.downloadBtn}>
+            <a
+              href={receivedFile.url}
+              download={receivedFile.name}
+              style={styles.downloadBtn}
+            >
               ⬇️ Tải xuống
             </a>
           </div>
