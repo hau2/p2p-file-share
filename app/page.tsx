@@ -108,23 +108,26 @@ export default function HomePage() {
     setOfferQR(
       `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${key}`
     );
+    setAnswerText(key + "-ans");
 
     appendLog("Offer created → key = " + key);
   };
 
   const handleApplyAnswer = async () => {
-    if (!answerText.trim()) return appendLog("Chưa có Answer Key!");
+    const offerKey = offerText.trim();
+    if (!offerKey) return appendLog("Sender: chưa có Offer Key!");
 
-    const key = answerText.trim();
+    const answerKey = offerKey + "-ans";
+    appendLog("Sender: đang đợi Answer key = " + answerKey);
 
     const handler = async (msg: any) => {
-      if (msg.data.type === "answer" && msg.data.key === key) {
-        appendLog("Sender: nhận Answer!");
+      if (msg.data.type === "answer" && msg.data.key === answerKey) {
+        appendLog("Sender: nhận được Answer!");
 
         const pc = ensurePC();
         await pc.setRemoteDescription(JSON.parse(msg.data.sdp));
 
-        appendLog("Sender: Answer applied!");
+        appendLog("Sender: Answer applied, WebRTC kết nối!");
         channel.removeEventListener("message", handler);
       }
     };
@@ -360,8 +363,9 @@ export default function HomePage() {
       {scanMode && (
         <QrScanner
           onScan={(text) => {
-            if (scanMode === "offer") createAnswerFromOffer(text);
-            else if (scanMode === "answer") setAnswerText(text);
+            const key = text.trim();
+            if (scanMode === "offer") createAnswerFromOffer(key);
+            else if (scanMode === "answer") setAnswerText(key);
           }}
           onClose={() => setScanMode(null)}
         />
