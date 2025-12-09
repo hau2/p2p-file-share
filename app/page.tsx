@@ -38,8 +38,7 @@ export default function HomePage() {
     if (pcRef.current) return pcRef.current;
 
     const pc = new RTCPeerConnection({
-      // LAN-only, không STUN → không đi Internet
-      iceServers: [],
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
 
     pc.oniceconnectionstatechange = () => {
@@ -123,7 +122,9 @@ export default function HomePage() {
       const pc = ensurePC();
       const answer = JSON.parse(answerText);
       await pc.setRemoteDescription(answer);
-      appendLog("Sender đã setRemoteDescription(answer). Kết nối sắp sẵn sàng.");
+      appendLog(
+        "Sender đã setRemoteDescription(answer). Kết nối sắp sẵn sàng."
+      );
     } catch (err: any) {
       appendLog("Lỗi apply answer: " + err?.message);
     }
@@ -149,7 +150,7 @@ export default function HomePage() {
           type: "meta",
           name: file.name,
           size: file.size,
-        }),
+        })
       );
 
       const CHUNK_SIZE = 16 * 1024; // 16KB
@@ -214,7 +215,7 @@ export default function HomePage() {
               if (msg.type === "meta") {
                 fileMeta = { name: msg.name, size: msg.size };
                 appendLog(
-                  `Receiver: nhận metadata file: ${msg.name} (${msg.size} bytes)`,
+                  `Receiver: nhận metadata file: ${msg.name} (${msg.size} bytes)`
                 );
               } else if (msg.type === "end") {
                 appendLog("Receiver: nhận xong file, ghép lại…");
@@ -288,7 +289,9 @@ export default function HomePage() {
         P2P File Share (LAN / Hotspot, không backend)
       </h1>
 
-      <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
+      <div
+        style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}
+      >
         <button
           onClick={handleCreateOffer}
           style={{
@@ -331,7 +334,10 @@ export default function HomePage() {
         <ol style={{ fontSize: 14, marginBottom: 8, paddingLeft: 20 }}>
           <li>Bấm nút &quot;Tôi là SENDER&quot; để tạo offer.</li>
           <li>Copy nội dung Offer gửi cho Receiver (Zalo, Messenger…).</li>
-          <li>Nhận Answer từ Receiver, dán vào ô Answer bên dưới rồi bấm &quot;Apply Answer&quot;.</li>
+          <li>
+            Nhận Answer từ Receiver, dán vào ô Answer bên dưới rồi bấm
+            &quot;Apply Answer&quot;.
+          </li>
           <li>Sau khi kết nối xong, chọn file để gửi.</li>
         </ol>
 
@@ -413,7 +419,9 @@ export default function HomePage() {
         <h2 style={{ marginBottom: 8 }}>Receiver</h2>
         <ol style={{ fontSize: 14, marginBottom: 8, paddingLeft: 20 }}>
           <li>Nhận Offer từ Sender, dán vào ô Offer.</li>
-          <li>Bấm &quot;Tạo Answer&quot; rồi copy Answer gửi lại cho Sender.</li>
+          <li>
+            Bấm &quot;Tạo Answer&quot; rồi copy Answer gửi lại cho Sender.
+          </li>
           <li>Chờ Sender gửi file – khi xong sẽ có nút tải xuống.</li>
         </ol>
 
