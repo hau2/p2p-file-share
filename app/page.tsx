@@ -5,8 +5,24 @@
 import React, { useRef, useState } from "react";
 import QrScanner from "@/components/QRScanner";
 
-// tạo mã ngắn
-const genKey = () => Math.random().toString(36).substring(2, 8);
+function encodeSDP(obj: any) {
+  const json = JSON.stringify(obj);
+  const utf8 = new TextEncoder().encode(json);
+  const base64 = btoa(String.fromCharCode(...utf8));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeSDP(base64url: string) {
+  const base64 = base64url.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64.padEnd(
+    base64.length + ((4 - (base64.length % 4)) % 4),
+    "="
+  );
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  const json = new TextDecoder().decode(bytes);
+  return JSON.parse(json);
+}
 
 // tạo broadcast channel
 const channel = new BroadcastChannel("p2p-signaling");
@@ -75,8 +91,8 @@ export default function HomePage() {
   // ===============================
   const handleCreateOffer = async () => {
     setRole("sender");
-    setOfferText("");
-    setAnswerText("");
+    setOfferQR(null);
+    setAnswerQR(null);
     setReceivedFile(null);
 
     const pc = ensurePC();
@@ -88,53 +104,40 @@ export default function HomePage() {
     dc.onopen = () => setIsChannelOpen(true);
     dc.onclose = () => setIsChannelOpen(false);
 
+    // tạo offer
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+
     await waitForIceComplete(pc);
 
-    const json = JSON.stringify(pc.localDescription);
-
-    // 🎉 SHORT KEY
-    const key = genKey();
-
-    // gửi offer qua broadcast
-    channel.postMessage({
-      type: "offer",
-      key,
-      sdp: json,
+    const encoded = encodeSDP(pc.localDescription);
+    const res = await fetch("/api/save-offer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ offer: encoded }),
     });
 
-    localStorage.setItem("offer_" + key, json);
+    const { offerId } = await res.json();
 
-    setOfferText(key);
+    setOfferText(offerId);
     setOfferQR(
-      `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${key}`
+      `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${offerId}`
     );
-    setAnswerText(key + "-ans");
 
-    appendLog("Offer created → key = " + key);
+    appendLog("Sender: Offer đã upload MongoDB → ID = " + offerId);
   };
 
   const handleApplyAnswer = async () => {
-    const offerKey = offerText.trim();
-    if (!offerKey) return appendLog("Sender: chưa có Offer Key!");
+    if (!answerText.trim()) {
+      appendLog("Sender: chưa có Answer để Apply!");
+      return;
+    }
 
-    const answerKey = offerKey + "-ans";
-    appendLog("Sender: đang đợi Answer key = " + answerKey);
+    const pc = ensurePC();
+    const answerObj = decodeSDP(answerText.trim());
 
-    const handler = async (msg: any) => {
-      if (msg.data.type === "answer" && msg.data.key === answerKey) {
-        appendLog("Sender: nhận được Answer!");
-
-        const pc = ensurePC();
-        await pc.setRemoteDescription(JSON.parse(msg.data.sdp));
-
-        appendLog("Sender: Answer applied, WebRTC kết nối!");
-        channel.removeEventListener("message", handler);
-      }
-    };
-
-    channel.addEventListener("message", handler);
+    await pc.setRemoteDescription(answerObj);
+    appendLog("Sender: Answer applied, đang kết nối WebRTC…");
   };
 
   const handleSendFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -228,34 +231,78 @@ export default function HomePage() {
     });
 
     setAnswerText(answerKey);
+    const encodedAnswer = encodeSDP(pc.localDescription);
+
     setAnswerQR(
-      `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${answerKey}`
+      `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodedAnswer}`
     );
+
+    setAnswerText(encodedAnswer);
 
     appendLog("Receiver: Answer đã sẵn sàng → key = " + answerKey);
   }
 
-  const createAnswerFromOffer = async (key: string) => {
-    appendLog("Receiver: tìm offer với key = " + key);
+  const createAnswerFromOffer = async (offerId: string) => {
+    appendLog("Receiver: đang tải Offer từ server…");
 
-    // 1️⃣ thử lấy từ localStorage trước
-    const cached = localStorage.getItem("offer_" + key);
-    if (cached) {
-      appendLog("Receiver: tìm thấy Offer trong localStorage!");
-      await processOffer(key, cached);
-      return;
-    }
+    // 1) Lấy OFFER từ MongoDB
+    const res = await fetch(`/api/get-offer?id=${offerId}`);
+    const { offer } = await res.json();
+    const offerObj = decodeSDP(offer);
 
-    // 2️⃣ nếu chưa có → lắng nghe BroadcastChannel
-    const handler = async (msg: any) => {
-      if (msg.data.type === "offer" && msg.data.key === key) {
-        appendLog("Receiver: nhận offer qua BroadcastChannel!");
-        channel.removeEventListener("message", handler);
-        await processOffer(key, msg.data.sdp);
-      }
+    const pc = ensurePC();
+
+    pc.ondatachannel = (ev) => {
+      const ch = ev.channel;
+      dataChannelRef.current = ch;
+      ch.binaryType = "arraybuffer";
+
+      ch.onopen = () => setIsChannelOpen(true);
+      ch.onclose = () => setIsChannelOpen(false);
+
+      let meta: any = null;
+      const chunks: any[] = [];
+
+      ch.onmessage = (e) => {
+        if (typeof e.data === "string") {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "meta") meta = msg;
+
+          if (msg.type === "end") {
+            const blob = new Blob(chunks);
+            const url = URL.createObjectURL(blob);
+            setReceivedFile({ name: meta.name, size: meta.size, url });
+            appendLog("Receiver: File đã nhận xong!");
+          }
+        } else {
+          chunks.push(new Uint8Array(e.data));
+        }
+      };
     };
 
-    channel.addEventListener("message", handler);
+    await pc.setRemoteDescription(offerObj);
+
+    // tạo answer
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await waitForIceComplete(pc);
+
+    const encodedAnswer = encodeSDP(pc.localDescription);
+
+    // lưu Answer lên MongoDB
+    await fetch("/api/save-answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: offerId, answer: encodedAnswer }),
+    });
+
+    // tạo QR
+    setAnswerQR(
+      `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${offerId}`
+    );
+
+    setAnswerText(encodedAnswer);
+    appendLog("Receiver: Answer QR đã sẵn sàng!");
   };
 
   // ===============================
@@ -380,9 +427,9 @@ export default function HomePage() {
       {scanMode && (
         <QrScanner
           onScan={(text) => {
-            const key = text.trim();
-            if (scanMode === "offer") createAnswerFromOffer(key);
-            else if (scanMode === "answer") setAnswerText(key);
+            const s = text.trim();
+            if (scanMode === "offer") createAnswerFromOffer(s);
+            else if (scanMode === "answer") setAnswerText(s);
           }}
           onClose={() => setScanMode(null)}
         />
