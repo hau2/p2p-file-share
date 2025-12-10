@@ -63,7 +63,14 @@ export default function HomePage() {
     if (pcRef.current) return pcRef.current;
 
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: "turn:relay1.expressturn.org:3478",
+          username: "expressturn",
+          credential: "expressturn",
+        },
+      ],
     });
 
     pc.oniceconnectionstatechange = () => {
