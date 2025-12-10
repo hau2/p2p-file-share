@@ -1,21 +1,22 @@
-import clientPromise from "@/lib/mongo";
 import { NextResponse } from "next/server";
+import clientPromise from "@/lib/mongo";
 
 export async function POST(req: Request) {
-  const { id, answer } = await req.json();
+  try {
+    const { id, answer } = await req.json();
 
-  if (!id || !answer) {
-    return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    const client = await clientPromise;
+    const db = client.db("p2pshare");
+
+    await db.collection("answers").updateOne(
+      { _id: id },
+      { $set: { answer } },
+      { upsert: true }
+    );
+
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: err }, { status: 500 });
   }
-
-  const client = await clientPromise;
-  const db = client.db("p2pshare");
-
-  await db.collection("answers").insertOne({
-    _id: id,
-    answer,
-    createdAt: new Date(),
-  });
-
-  return NextResponse.json({ ok: true });
 }
