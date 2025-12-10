@@ -305,6 +305,19 @@ export default function HomePage() {
     appendLog("Receiver: Answer QR đã sẵn sàng!");
   };
 
+  async function fetchAndApplyAnswer(answerId: string) {
+    appendLog("Sender: đang tải Answer từ server…");
+
+    const res = await fetch(`/api/get-answer?id=${answerId}`);
+    const { answer } = await res.json();
+    const answerObj = decodeSDP(answer);
+
+    const pc = ensurePC();
+    await pc.setRemoteDescription(answerObj);
+
+    appendLog("Sender: Đã apply Answer → WebRTC đang kết nối…");
+  }
+
   // ===============================
   // UI — BEAUTIFUL VERSION
   // ===============================
@@ -429,7 +442,7 @@ export default function HomePage() {
           onScan={(text) => {
             const s = text.trim();
             if (scanMode === "offer") createAnswerFromOffer(s);
-            else if (scanMode === "answer") setAnswerText(s);
+            else if (scanMode === "answer") fetchAndApplyAnswer(s);
           }}
           onClose={() => setScanMode(null)}
         />
